@@ -1,2 +1,2 @@
 # HIDEOplayer
-Simple Video Player/Recorder with some 
+Simple Video Player/Recorder with some retro features
