@@ -1,6 +1,7 @@
 import numpy as np
 import cv2
 from datetime import datetime
+import time
 
 # 상수 정의
 # 키 코드 상수
@@ -8,8 +9,20 @@ KEY_RECORD = 32  # SPACE
 KEY_STOP = 113   # q
 KEY_OUTPUT = 27  # ESC
 
+# 효과 토글 키 상수
+KEY_TOGGLE_LENS = 108    # l - 렌즈 왜곡
+KEY_TOGGLE_VIGNETTE = 118  # v - 비네트
+KEY_TOGGLE_SEPIA = 115     # s - 세피아
+KEY_TOGGLE_VHS = 99        # c - VHS 컬러 시프트
+KEY_TOGGLE_NOISE = 110     # n - 노이즈
+KEY_TOGGLE_SCRATCHES = 120 # x - 스크래치
+
 # 디스플레이 상수
 DISPLAY_TITLE = "HIDEO"
+VIDEO_SOURCE = 0
+VIDEO_FPS = 12.0
+OS_CODEC = 'mp4v'  # macOS/Linux mp4v, Windows XVID
+OS_CODEC_POSTFIX = 'mp4'
 TEXT_COLOR = (255, 255, 255)
 RECORD_COLOR = (0, 0, 255)
 FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -20,6 +33,7 @@ FONT_THICKNESS = 2
 DEFAULT_VIGNETTE_STRENGTH = 1.0
 DEFAULT_VIGNETTE_DISTANCE_SCALE = 1.4
 DEFAULT_LENS_DISTORTION_STRENGTH = 0.07
+DEFAULT_SEPIA_STRENGTH = 0.5
 
 
 class VideoProcessor:
@@ -33,27 +47,36 @@ class VideoProcessor:
         self.fps = fps
         
         # 코덱, 출력 객체 초기화
-        self.fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # macOS/Linux mp4v, Windows XVID
+        self.fourcc = cv2.VideoWriter_fourcc(*OS_CODEC)
         self.out = None
         
         # 후처리 속성
         self.vignette_strength = DEFAULT_VIGNETTE_STRENGTH
         self.vignette_distance_scale = DEFAULT_VIGNETTE_DISTANCE_SCALE
         self.lens_distortion_strength = DEFAULT_LENS_DISTORTION_STRENGTH
+        self.sepia_strength = DEFAULT_SEPIA_STRENGTH
         
-        # 비네트 마스크 생성
+        # 비네트 마스크 생성 (초기화 시 한 번만 계산하여 메모리에 저장)
         self.vignette_mask = self._create_vignette_mask(self.frame_width, self.frame_height,
                                                   strength=self.vignette_strength,
                                                   distance_scale=self.vignette_distance_scale)
         self.vignette_mask_3d = cv2.merge([self.vignette_mask, self.vignette_mask, self.vignette_mask])
         
-        # 플래그
+        # 효과 활성화 플래그
         self.is_recording = False
         self.enable_lens_distortion = True
         self.enable_vignette = True
+        self.enable_sepia = False
+        self.enable_vhs = True
+        self.enable_noise = True
+        self.enable_scratches = False
         
         # 프레임 계산
         self.frame_count = 0
+        
+        # FPS 조절을 위한 타이머 변수
+        self.last_frame_time = 0
+        self.frame_interval = 1.0 / self.fps
     
     def _add_scratches(self, frame, num_scratches=3):
         """아날로그 수직 선 추가 메소드"""
@@ -200,6 +223,25 @@ class VideoProcessor:
         cv2.putText(frame, "HIDEO", (self.frame_width - 150, 75),
                     FONT, FONT_SCALE, TEXT_COLOR, FONT_THICKNESS)
         
+        # 활성화된 효과 표시
+        effects_status = []
+        if self.enable_lens_distortion:
+            effects_status.append("LENS")
+        if self.enable_vignette:
+            effects_status.append("VIGN")
+        if self.enable_sepia:
+            effects_status.append("SEPIA")
+        if self.enable_vhs:
+            effects_status.append("VHS")
+        if self.enable_noise:
+            effects_status.append("NOISE")
+        if self.enable_scratches:
+            effects_status.append("SCRCH")
+        
+        effects_text = " ".join(effects_status)
+        cv2.putText(frame, effects_text, (75, 75),
+                    FONT, 0.5, TEXT_COLOR, 1)
+        
         return frame
     
     def _apply_effects(self, frame):
@@ -207,22 +249,30 @@ class VideoProcessor:
         # 후처리를 위해 프레임 복사
         processed_frame = frame.copy()
         
-        # 색조 변경 (필요시 주석 해제)
-        # processed_frame = self._apply_sepia(processed_frame, 0.5)
+        # 색조 변경 (세피아)
+        if self.enable_sepia:
+            processed_frame = self._apply_sepia(processed_frame, self.sepia_strength)
         
-        # 각종 아날로그 효과
-        processed_frame = self._apply_vhs_color_shift(processed_frame)
-        processed_frame = self._add_gaussian_noise(processed_frame)
-        # processed_frame = self._add_scratches(processed_frame, 3)
+        # VHS 컬러 시프트
+        if self.enable_vhs:
+            processed_frame = self._apply_vhs_color_shift(processed_frame)
         
-        # 비네트 효과 적용
+        # 노이즈 효과
+        if self.enable_noise:
+            processed_frame = self._add_gaussian_noise(processed_frame)
+        
+        # 스크래치 효과
+        if self.enable_scratches:
+            processed_frame = self._add_scratches(processed_frame, 3)
+        
+        # 비네트 효과 적용 (강한 효과)
         if self.enable_vignette:
             processed_frame = self._apply_vignette(processed_frame, self.vignette_mask_3d)
         
         # 텍스트 및 오버레이 추가
         processed_frame = self._add_overlay_text(processed_frame)
         
-        # 비네트 적용 (약한 효과)
+        # 비네트 적용 (약한 효과) - 항상 적용
         processed_frame = (processed_frame * (self.vignette_mask_3d / 255) * 0.25 + processed_frame * 0.75).astype(np.uint8)
         
         # 렌즈 효과 적용
@@ -236,10 +286,13 @@ class VideoProcessor:
         self.is_recording = not self.is_recording
         
         if self.is_recording and self.out is None:
-            output_filename = f"output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+            output_filename = f"output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{OS_CODEC_POSTFIX}"
             self.out = cv2.VideoWriter(output_filename, self.fourcc, self.fps, 
                                       (self.frame_width, self.frame_height))
             print("녹화 시작")
+            # 녹화 시작 시 프레임 카운트 초기화
+            self.frame_count = 0
+            self.last_frame_time = time.time()
         elif not self.is_recording and self.out is not None:
             print("녹화 일시정지")
     
@@ -260,12 +313,40 @@ class VideoProcessor:
         # 모든 효과 적용
         processed_frame = self._apply_effects(frame)
         
-        # 녹화 중이면 프레임 저장
+        # 녹화 중이면 FPS에 맞춰 프레임 저장
         if self.is_recording and self.out is not None:
-            self.out.write(processed_frame)
-            self.frame_count += 1
+            current_time = time.time()
+            elapsed = current_time - self.last_frame_time
+            
+            # FPS에 맞게 시간이 경과했으면 프레임 저장
+            if elapsed >= self.frame_interval:
+                self.out.write(processed_frame)
+                self.frame_count += 1
+                self.last_frame_time = current_time
         
         return processed_frame
+    
+    def toggle_effect(self, effect_name):
+        """효과 토글 메소드"""
+        if effect_name == "lens":
+            self.enable_lens_distortion = not self.enable_lens_distortion
+            return f"렌즈 왜곡: {'켜짐' if self.enable_lens_distortion else '꺼짐'}"
+        elif effect_name == "vignette":
+            self.enable_vignette = not self.enable_vignette
+            return f"비네트: {'켜짐' if self.enable_vignette else '꺼짐'}"
+        elif effect_name == "sepia":
+            self.enable_sepia = not self.enable_sepia
+            return f"세피아: {'켜짐' if self.enable_sepia else '꺼짐'}"
+        elif effect_name == "vhs":
+            self.enable_vhs = not self.enable_vhs
+            return f"VHS 컬러 시프트: {'켜짐' if self.enable_vhs else '꺼짐'}"
+        elif effect_name == "noise":
+            self.enable_noise = not self.enable_noise
+            return f"노이즈: {'켜짐' if self.enable_noise else '꺼짐'}"
+        elif effect_name == "scratches":
+            self.enable_scratches = not self.enable_scratches
+            return f"스크래치: {'켜짐' if self.enable_scratches else '꺼짐'}"
+        return "알 수 없는 효과"
     
     def handle_key_press(self, key):
         """키 입력 처리"""
@@ -277,6 +358,25 @@ class VideoProcessor:
             return True
         elif key == KEY_STOP:
             return False
+        # 효과 토글 키 처리
+        elif key == KEY_TOGGLE_LENS:
+            print(self.toggle_effect("lens"))
+            return True
+        elif key == KEY_TOGGLE_VIGNETTE:
+            print(self.toggle_effect("vignette"))
+            return True
+        elif key == KEY_TOGGLE_SEPIA:
+            print(self.toggle_effect("sepia"))
+            return True
+        elif key == KEY_TOGGLE_VHS:
+            print(self.toggle_effect("vhs"))
+            return True
+        elif key == KEY_TOGGLE_NOISE:
+            print(self.toggle_effect("noise"))
+            return True
+        elif key == KEY_TOGGLE_SCRATCHES:
+            print(self.toggle_effect("scratches"))
+            return True
         return True
     
     def release_resources(self):
@@ -289,7 +389,20 @@ class VideoProcessor:
 
 def main():
     # 비디오 프로세서 초기화
-    processor = VideoProcessor(input_path=0, fps=12.0)
+    processor = VideoProcessor(input_path=VIDEO_SOURCE, fps=VIDEO_FPS)
+    
+    print("\n===== HIDEO 플레이어 =====")
+    print("효과 토글 키:")
+    print("l - 렌즈 왜곡 켜기/끄기")
+    print("v - 비네트 켜기/끄기")
+    print("s - 세피아 켜기/끄기")
+    print("c - VHS 컬러 시프트 켜기/끄기")
+    print("n - 노이즈 켜기/끄기")
+    print("x - 스크래치 켜기/끄기")
+    print("스페이스바 - 녹화 시작/일시정지")
+    print("ESC - 녹화 종료 및 파일 저장")
+    print("q - 프로그램 종료")
+    print("=======================\n")
     
     # 메인 루프
     running = True
@@ -302,9 +415,12 @@ def main():
         # 화면 출력
         cv2.imshow(DISPLAY_TITLE, processed_frame)
         
-        # 키 입력
+        # 키 입력 - 1ms 대기 (낮은 지연으로 인터페이스 응답성 유지)
         key = cv2.waitKey(1) & 0xFF
         running = processor.handle_key_press(key)
+        
+        # CPU 부하 감소를 위한 작은 지연
+        time.sleep(0.001)
     
     # 메모리 반환
     processor.release_resources()
