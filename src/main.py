@@ -5,29 +5,31 @@ import time
 
 # 상수 정의
 # 키 코드 상수
-KEY_RECORD = 32  # SPACE
-KEY_STOP = 113   # q
-KEY_OUTPUT = 27  # ESC
+KEY_RECORD = 32  # SPACE  - 녹화 토글
+KEY_STOP   = 27  # ESC    - 프로그램 종료
+KEY_OUTPUT = 111 # o      - 녹화 파일 출력
 
 # 효과 토글 키 상수
-KEY_TOGGLE_LENS = 108    # l - 렌즈 왜곡
-KEY_TOGGLE_VIGNETTE = 118  # v - 비네트
-KEY_TOGGLE_SEPIA = 115     # s - 세피아
-KEY_TOGGLE_VHS = 99        # c - VHS 컬러 시프트
-KEY_TOGGLE_NOISE = 110     # n - 노이즈
-KEY_TOGGLE_SCRATCHES = 120 # x - 스크래치
+KEY_TOGGLE_LENS = 108      # l - 렌즈 왜곡 토글
+KEY_TOGGLE_VIGNETTE = 118  # v - 비네트 토글
+KEY_TOGGLE_SEPIA = 115     # s - 세피아 필터 토글
+KEY_TOGGLE_VHS = 99        # c - VHS 컬러 시프트 토글
+KEY_TOGGLE_NOISE = 110     # n - 노이즈 토글
+KEY_TOGGLE_SCRATCHES = 120 # x - 스크래치 토글
 
 # 디스플레이 상수
 DISPLAY_TITLE = "HIDEO"
-VIDEO_SOURCE = 0
-VIDEO_FPS = 12.0
+VIDEO_SOURCE = 0   # RTSP 주소 또는 0-N (카메라)
+VIDEO_FPS = 60.0
 OS_CODEC = 'mp4v'  # macOS/Linux mp4v, Windows XVID
 OS_CODEC_POSTFIX = 'mp4'
 TEXT_COLOR = (255, 255, 255)
 RECORD_COLOR = (0, 0, 255)
-FONT = cv2.FONT_HERSHEY_SIMPLEX
+FONT = cv2.FONT_HERSHEY_SIMPLEX # 기본 폰트만 사용가능함
 FONT_SCALE = 0.7
 FONT_THICKNESS = 2
+s_FONT_SCALE = 0.5
+s_FONT_THICKNESS = 1
 
 # 효과 상수
 DEFAULT_VIGNETTE_STRENGTH = 1.0
@@ -55,6 +57,10 @@ class VideoProcessor:
         self.vignette_distance_scale = DEFAULT_VIGNETTE_DISTANCE_SCALE
         self.lens_distortion_strength = DEFAULT_LENS_DISTORTION_STRENGTH
         self.sepia_strength = DEFAULT_SEPIA_STRENGTH
+
+        # 가우시안 노이즈 패치 생성 (초기화 시 한 번만 계산하여 메모리에 저장)
+        self.gaussian_noise = self._create_gaussian_noise(self.frame_width, self.frame_height,
+                                                          mean=0, sigma=25, patch_size=128)
         
         # 비네트 마스크 생성 (초기화 시 한 번만 계산하여 메모리에 저장)
         self.vignette_mask = self._create_vignette_mask(self.frame_width, self.frame_height,
@@ -79,7 +85,9 @@ class VideoProcessor:
         self.frame_interval = 1.0 / self.fps
     
     def _add_scratches(self, frame, num_scratches=3):
-        """아날로그 수직 선 추가 메소드"""
+        """
+        랜덤한 아날로그 테이프 스크래치 효과를 추가합니다.
+        """
         scratched_frame = frame.copy()
         height, width = frame.shape[:2]
         for _ in range(num_scratches):
@@ -88,23 +96,71 @@ class VideoProcessor:
             cv2.line(scratched_frame, (x, 0), (x, height), (200, 200, 200), thickness)  # 밝은 선
         return scratched_frame
     
-    def _add_gaussian_noise(self, frame, mean=0, sigma=25):
-        """랜덤한 화이트 노이즈 추가 메소드"""
-        # 가우시안 노이즈 생성
-        noise = np.random.normal(mean, sigma, frame.shape).astype(np.float32)
+    def _create_gaussian_noise(self, width, height, mean=0, sigma=25, patch_size=128):
+        """
+        작은 사이즈의 노이즈 패치를 생성합니다.
+        이후 타일링하여 사용하기 위한 기본 패치입니다.
+        """
+        # 작은 노이즈 패치 생성 (성능 향상을 위해)
+        noise_patch = np.random.normal(mean, sigma, (patch_size, patch_size, 3)).astype(np.float32)
+        return noise_patch
+    
+    def _add_gaussian_noise(self, frame, noise_patch=None):
+        """
+        가우시안 노이즈를 화면에 추가합니다.
+        타일링 방식으로 노이즈를 효율적으로 적용합니다.
+        """
+        if noise_patch is None:
+            noise_patch = self.gaussian_noise
+            
+        height, width = frame.shape[:2]
+        patch_size = noise_patch.shape[0]
+        
+        # 프레임 크기에 맞게 패치를 타일링
+        h_tiles = int(np.ceil(height / patch_size))
+        w_tiles = int(np.ceil(width / patch_size))
+        
+        # 전체 노이즈 맵 초기화
+        noise_map = np.zeros(frame.shape, dtype=np.float32)
+        
+        # 패치 타일링
+        for i in range(h_tiles):
+            for j in range(w_tiles):
+                h_start = i * patch_size
+                w_start = j * patch_size
+                h_end = min(h_start + patch_size, height)
+                w_end = min(w_start + patch_size, width)
+                
+                # 패치의 일부 무작위 회전 또는 뒤집기 (다양성 추가)
+                curr_patch = noise_patch.copy()
+                if np.random.rand() > 0.5:
+                    curr_patch = np.fliplr(curr_patch)
+                if np.random.rand() > 0.5:
+                    curr_patch = np.flipud(curr_patch)
+                
+                # 노이즈 맵에 패치 적용
+                patch_h = h_end - h_start
+                patch_w = w_end - w_start
+                noise_map[h_start:h_end, w_start:w_end] = curr_patch[:patch_h, :patch_w]
+        
         # 프레임에 노이즈 추가
-        noisy_frame = frame.astype(np.float32) + noise
+        noisy_frame = frame.astype(np.float32) + noise_map
         # 0~255 범위로 클리핑
         noisy_frame = np.clip(noisy_frame, 0, 255).astype(np.uint8)
         return noisy_frame
     
-    def _apply_vhs_color_shift(self, frame):
-        """VHS 컬러 분리 메소드"""
+    def _apply_vhs_color_shift(self, frame, shift_amount=2):
+        """
+        Red, Blue 채널을 분리하는 효과를 줍니다.
+        :param frame: 입력 프레임 (numpy 배열)
+        :param shift_amount: 채널 이동 정도 (기본값: 2)
+        :return: 효과가 적용된 프레임
+        """
         # 채널 분리
         b, g, r = cv2.split(frame)
         # 각 채널에 약간의 오프셋 추가
-        b_shifted = np.roll(b, 2, axis=1)  # 파란색 약간 오른쪽으로 이동
-        r_shifted = np.roll(r, -2, axis=1)  # 빨간색 약간 왼쪽으로 이동
+        b_shifted = np.roll(b, shift_amount, axis=1)  # 파란색 약간 오른쪽으로 이동
+        r_shifted = np.roll(r, -shift_amount, axis=1)  # 빨간색 약간 왼쪽으로 이동
         # 다시 합침
         vhs_frame = cv2.merge([b_shifted, g, r_shifted])
         return vhs_frame
@@ -240,7 +296,7 @@ class VideoProcessor:
         
         effects_text = " ".join(effects_status)
         cv2.putText(frame, effects_text, (75, 75),
-                    FONT, 0.5, TEXT_COLOR, 1)
+                    FONT, s_FONT_SCALE, TEXT_COLOR, s_FONT_THICKNESS)
         
         return frame
     
@@ -259,7 +315,7 @@ class VideoProcessor:
         
         # 노이즈 효과
         if self.enable_noise:
-            processed_frame = self._add_gaussian_noise(processed_frame)
+            processed_frame = self._add_gaussian_noise(processed_frame, self.gaussian_noise)
         
         # 스크래치 효과
         if self.enable_scratches:
@@ -399,9 +455,9 @@ def main():
     print("c - VHS 컬러 시프트 켜기/끄기")
     print("n - 노이즈 켜기/끄기")
     print("x - 스크래치 켜기/끄기")
-    print("스페이스바 - 녹화 시작/일시정지")
-    print("ESC - 녹화 종료 및 파일 저장")
-    print("q - 프로그램 종료")
+    print("o - 녹화 종료 및 파일 저장")
+    print("SPACE - 녹화 시작/일시정지")
+    print("ESC - 프로그램 종료")
     print("=======================\n")
     
     # 메인 루프
