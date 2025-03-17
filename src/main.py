@@ -1,7 +1,10 @@
 import numpy as np
 import cv2
+import metalcompute as mc
+
 from datetime import datetime
 import time
+
 
 # 상수 정의
 # 키 코드 상수
@@ -20,7 +23,7 @@ KEY_TOGGLE_SCRATCHES = 120 # x - 스크래치 토글
 # 디스플레이 상수
 DISPLAY_TITLE = "HIDEO"
 VIDEO_SOURCE = 0   # RTSP 주소 또는 0-N (카메라)
-VIDEO_FPS = 30.0
+VIDEO_FPS = cv2.CAP_PROP_FPS
 OS_CODEC = 'mp4v'  # macOS/Linux mp4v, Windows XVID
 OS_CODEC_POSTFIX = 'mp4'
 TEXT_COLOR = (255, 255, 255)
@@ -231,24 +234,43 @@ class VideoProcessor:
         return cropped_frame
     
     def _add_overlay_text(self, frame):
-        """화면에 오버레이 텍스트 추가"""
+        """화면에 오버레이 텍스트 추가 (비율 기반)"""
         # 현재 시간
         current_time = datetime.now()
         time_text = current_time.strftime("%H:%M:%S")
         
+        # 비율 기반 위치 계산 (화면 크기 변경에 일관성 유지)
+        w, h = self.frame_width, self.frame_height
+        
+        # 위치 간격 및 여백 (비율 기반) - 렌즈 왜곡 효과를 고려해 더 안쪽으로 배치
+        margin_ratio = 0.15  # 화면 가장자리로부터의 여백 (15%)
+        margin_x = int(w * margin_ratio)
+        margin_y = int(h * margin_ratio)
+        
         # 녹화 중 표시
         blink = (self.record_frame_count // int(self.fps / 2)) % 2  # FPS 기반 0.5초 주기
+        
+        # 하단 왼쪽 (녹화 상태) - 렌즈 왜곡 고려하여 안쪽으로 배치
+        bottom_left_x = margin_x
+        bottom_left_y = int(h * 0.85)  # 하단에서 15% 위치
         
         # 녹화 중임을 나타내는 원
         if self.is_recording:
             if blink:
-                cv2.circle(frame, (75, self.frame_height - 60), 8, RECORD_COLOR, -1)  # 빨간 원
+                # 원 위치 (하단 왼쪽)
+                record_circle_x = bottom_left_x
+                record_circle_y = bottom_left_y - int(h * 0.01)  # 작은 조정
+                cv2.circle(frame, (record_circle_x, record_circle_y), 
+                          int(h * 0.01), RECORD_COLOR, -1)  # 높이의 1% 크기
             record_status_text = "RECORD"
         else:
             record_status_text = "PAUSED"
         
-        cv2.putText(frame, record_status_text, (90, self.frame_height - 53),
-                    FONT, FONT_SCALE, TEXT_COLOR, FONT_THICKNESS)
+        # 녹화 상태 텍스트 위치
+        record_text_x = bottom_left_x + int(w * 0.02)  # 원 오른쪽으로 2% 이동
+        record_text_y = bottom_left_y
+        cv2.putText(frame, record_status_text, (record_text_x, record_text_y),
+                   FONT, FONT_SCALE, TEXT_COLOR, FONT_THICKNESS)
         
         # 녹화 시간 및 프레임
         elapsed_time_seconds = self.record_frame_count / self.fps
@@ -256,22 +278,46 @@ class VideoProcessor:
         elapsed_time_seconds = int(elapsed_time_seconds % 60)
         elapsed_time_text = f"TIME {elapsed_time_minutes:02}:{elapsed_time_seconds:02}"
         
-        # 녹화 프레임과 전체 프레임을 함께 표시
+        # 하단 오른쪽 (녹화 정보)
+        bottom_right_x = int(w * (1 - margin_ratio))
+        bottom_right_y = bottom_left_y
+        
+        # 텍스트 길이 측정 및 오른쪽 정렬을 위한 보정
         frame_text = f"FRAME {self.record_frame_count}/{self.total_frame_count}"
-        cv2.putText(frame, frame_text, (self.frame_width - 250, self.frame_height - 53),
-                    FONT, FONT_SCALE, TEXT_COLOR, FONT_THICKNESS)
-        cv2.putText(frame, elapsed_time_text, (self.frame_width - 250, self.frame_height - 73),
-                    FONT, FONT_SCALE, TEXT_COLOR, FONT_THICKNESS)
         
-        # 현재 시간 표시
-        cv2.putText(frame, time_text, (270, 75),
-                    FONT, FONT_SCALE, TEXT_COLOR, FONT_THICKNESS)
+        # 녹화 프레임 텍스트 위치 (하단 오른쪽)
+        frame_text_size = cv2.getTextSize(frame_text, FONT, FONT_SCALE, FONT_THICKNESS)[0]
+        frame_text_x = bottom_right_x - frame_text_size[0]
+        frame_text_y = bottom_right_y
+        cv2.putText(frame, frame_text, (frame_text_x, frame_text_y),
+                   FONT, FONT_SCALE, TEXT_COLOR, FONT_THICKNESS)
         
-        # HIDEO 로고
-        cv2.putText(frame, "HIDEO", (self.frame_width - 150, 75),
-                    FONT, FONT_SCALE, TEXT_COLOR, FONT_THICKNESS)
+        # 녹화 시간 텍스트 위치 (프레임 위)
+        time_text_size = cv2.getTextSize(elapsed_time_text, FONT, FONT_SCALE, FONT_THICKNESS)[0]
+        time_text_x = bottom_right_x - time_text_size[0]
+        time_text_y = frame_text_y - int(h * 0.03)  # 위로 3% 이동
+        cv2.putText(frame, elapsed_time_text, (time_text_x, time_text_y),
+                   FONT, FONT_SCALE, TEXT_COLOR, FONT_THICKNESS)
         
-        # 활성화된 효과 표시
+        # 상단 영역 - 렌즈 왜곡 고려하여 더 아래로 배치
+        top_margin_y = margin_y + int(h * 0.05)  # 상단에서 5% 아래로
+        
+        # 현재 시간 표시 (상단 중앙)
+        time_text_size = cv2.getTextSize(time_text, FONT, FONT_SCALE, FONT_THICKNESS)[0]
+        current_time_x = (w - time_text_size[0]) // 2  # 중앙 정렬
+        current_time_y = top_margin_y
+        cv2.putText(frame, time_text, (current_time_x, current_time_y),
+                   FONT, FONT_SCALE, TEXT_COLOR, FONT_THICKNESS)
+        
+        # HIDEO 로고 (상단 오른쪽)
+        logo_text = "HIDEO"
+        logo_text_size = cv2.getTextSize(logo_text, FONT, FONT_SCALE, FONT_THICKNESS)[0]
+        logo_x = bottom_right_x - logo_text_size[0]
+        logo_y = top_margin_y
+        cv2.putText(frame, logo_text, (logo_x, logo_y),
+                   FONT, FONT_SCALE, TEXT_COLOR, FONT_THICKNESS)
+        
+        # 활성화된 효과 표시 (상단 왼쪽)
         effects_status = []
         if self.enable_lens_distortion:
             effects_status.append("LENS")
@@ -287,8 +333,10 @@ class VideoProcessor:
             effects_status.append("SCRCH")
         
         effects_text = " ".join(effects_status)
-        cv2.putText(frame, effects_text, (75, 75),
-                    FONT, s_FONT_SCALE, TEXT_COLOR, s_FONT_THICKNESS)
+        effects_x = bottom_left_x
+        effects_y = top_margin_y
+        cv2.putText(frame, effects_text, (effects_x, effects_y),
+                   FONT, s_FONT_SCALE, TEXT_COLOR, s_FONT_THICKNESS)
         
         return frame
     
