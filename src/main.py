@@ -23,7 +23,7 @@ KEY_TOGGLE_SCRATCHES = 120 # x - 스크래치 토글
 # 디스플레이 상수
 DISPLAY_TITLE = "HIDEO"
 VIDEO_SOURCE = 0   # RTSP 주소 또는 0-N (카메라)
-VIDEO_FPS = cv2.CAP_PROP_FPS
+VIDEO_FPS = 12.0
 OS_CODEC = 'mp4v'  # macOS/Linux mp4v, Windows XVID
 OS_CODEC_POSTFIX = 'mp4'
 TEXT_COLOR = (255, 255, 255)
