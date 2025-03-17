@@ -20,7 +20,7 @@ KEY_TOGGLE_SCRATCHES = 120 # x - 스크래치 토글
 # 디스플레이 상수
 DISPLAY_TITLE = "HIDEO"
 VIDEO_SOURCE = 0   # RTSP 주소 또는 0-N (카메라)
-VIDEO_FPS = 60.0
+VIDEO_FPS = 30.0
 OS_CODEC = 'mp4v'  # macOS/Linux mp4v, Windows XVID
 OS_CODEC_POSTFIX = 'mp4'
 TEXT_COLOR = (255, 255, 255)
@@ -36,6 +36,7 @@ DEFAULT_VIGNETTE_STRENGTH = 1.0
 DEFAULT_VIGNETTE_DISTANCE_SCALE = 1.4
 DEFAULT_LENS_DISTORTION_STRENGTH = 0.07
 DEFAULT_SEPIA_STRENGTH = 0.5
+DEFAULT_NOISE_BUFFER_SIZE = 5  # 노이즈 버퍼 크기 상수
 
 
 class VideoProcessor:
@@ -58,9 +59,9 @@ class VideoProcessor:
         self.lens_distortion_strength = DEFAULT_LENS_DISTORTION_STRENGTH
         self.sepia_strength = DEFAULT_SEPIA_STRENGTH
 
-        # 가우시안 노이즈 패치 생성 (초기화 시 한 번만 계산하여 메모리에 저장)
-        self.gaussian_noise = self._create_gaussian_noise(self.frame_width, self.frame_height,
-                                                          mean=0, sigma=25, patch_size=128)
+        # 가우시안 노이즈 버퍼 생성 (초기화 시 한 번만 계산하여 메모리에 저장)
+        self.noise_buffer = self._create_gaussian_noise(self.frame_width, self.frame_height,
+                                                       mean=0, sigma=25, buffer_size=DEFAULT_NOISE_BUFFER_SIZE)
         
         # 비네트 마스크 생성 (초기화 시 한 번만 계산하여 메모리에 저장)
         self.vignette_mask = self._create_vignette_mask(self.frame_width, self.frame_height,
@@ -78,7 +79,8 @@ class VideoProcessor:
         self.enable_scratches = False
         
         # 프레임 계산
-        self.frame_count = 0
+        self.record_frame_count = 0  # 녹화 프레임 카운트
+        self.total_frame_count = 0   # 전체 프레임 카운트 (노이즈 효과 등에 사용)
         
         # FPS 조절을 위한 타이머 변수
         self.last_frame_time = 0
@@ -96,55 +98,33 @@ class VideoProcessor:
             cv2.line(scratched_frame, (x, 0), (x, height), (200, 200, 200), thickness)  # 밝은 선
         return scratched_frame
     
-    def _create_gaussian_noise(self, width, height, mean=0, sigma=25, patch_size=128):
+    def _create_gaussian_noise(self, width, height, mean=0, sigma=25, buffer_size=5):
         """
-        작은 사이즈의 노이즈 패치를 생성합니다.
-        이후 타일링하여 사용하기 위한 기본 패치입니다.
+        여러 개의 노이즈 프레임을 미리 생성하여 버퍼에 저장합니다.
+        성능 향상을 위해 매번 노이즈를 생성하지 않고 버퍼에서 순환하여 사용합니다.
         """
-        # 작은 노이즈 패치 생성 (성능 향상을 위해)
-        noise_patch = np.random.normal(mean, sigma, (patch_size, patch_size, 3)).astype(np.float32)
-        return noise_patch
+        # 여러 노이즈 프레임을 버퍼에 저장
+        noise_buffer = []
+        for _ in range(buffer_size):
+            noise = np.random.normal(mean, sigma, (height, width, 3)).astype(np.float32)
+            noise_buffer.append(noise)
+        return noise_buffer
     
-    def _add_gaussian_noise(self, frame, noise_patch=None):
+    def _add_gaussian_noise(self, frame, noise_buffer=None):
         """
         가우시안 노이즈를 화면에 추가합니다.
-        타일링 방식으로 노이즈를 효율적으로 적용합니다.
+        버퍼에 저장된 노이즈 프레임을 순환하여 사용합니다.
         """
-        if noise_patch is None:
-            noise_patch = self.gaussian_noise
+        if noise_buffer is None:
+            noise_buffer = self.noise_buffer
             
-        height, width = frame.shape[:2]
-        patch_size = noise_patch.shape[0]
-        
-        # 프레임 크기에 맞게 패치를 타일링
-        h_tiles = int(np.ceil(height / patch_size))
-        w_tiles = int(np.ceil(width / patch_size))
-        
-        # 전체 노이즈 맵 초기화
-        noise_map = np.zeros(frame.shape, dtype=np.float32)
-        
-        # 패치 타일링
-        for i in range(h_tiles):
-            for j in range(w_tiles):
-                h_start = i * patch_size
-                w_start = j * patch_size
-                h_end = min(h_start + patch_size, height)
-                w_end = min(w_start + patch_size, width)
-                
-                # 패치의 일부 무작위 회전 또는 뒤집기 (다양성 추가)
-                curr_patch = noise_patch.copy()
-                if np.random.rand() > 0.5:
-                    curr_patch = np.fliplr(curr_patch)
-                if np.random.rand() > 0.5:
-                    curr_patch = np.flipud(curr_patch)
-                
-                # 노이즈 맵에 패치 적용
-                patch_h = h_end - h_start
-                patch_w = w_end - w_start
-                noise_map[h_start:h_end, w_start:w_end] = curr_patch[:patch_h, :patch_w]
+        # 버퍼에서 현재 노이즈 프레임 선택 (순환)
+        # 전체 프레임 카운트를 사용하여 녹화 여부와 상관없이 노이즈 변화
+        buffer_idx = self.total_frame_count % len(noise_buffer)
+        noise = noise_buffer[buffer_idx]
         
         # 프레임에 노이즈 추가
-        noisy_frame = frame.astype(np.float32) + noise_map
+        noisy_frame = frame.astype(np.float32) + noise
         # 0~255 범위로 클리핑
         noisy_frame = np.clip(noisy_frame, 0, 255).astype(np.uint8)
         return noisy_frame
@@ -188,13 +168,23 @@ class VideoProcessor:
     
     def _create_vignette_mask(self, width, height, strength=1.0, distance_scale=1.0):
         """비네트 효과 마스크 생성 메소드"""
+        if width == 0 or height == 0:  # 카메라 초기화 실패 시 대비
+            return np.ones((1, 1), dtype=np.uint8) * 255
+            
         kernel_x = np.linspace(-1, 1, width)
         kernel_y = np.linspace(-1, 1, height)
         X, Y = np.meshgrid(kernel_x, kernel_y)
         D = np.sqrt(X**2 + Y**2)  # Distance from center
         D_scaled = D / distance_scale  # 거리 스케일링으로 효과 범위 조정
         mask = np.clip(1 - D_scaled * strength, 0, 1)  # Inverse of scaled distance
-        mask = (mask / np.max(mask) * 255).astype(np.uint8)  # Scale to 255
+        
+        # np.max(mask)가 0인 경우(빈 마스크) 예외 처리
+        max_val = np.max(mask)
+        if max_val > 0:
+            mask = (mask / max_val * 255).astype(np.uint8)  # Scale to 255
+        else:
+            mask = np.ones_like(mask, dtype=np.uint8) * 255
+            
         return mask
     
     def _apply_vignette(self, frame, mask_3d):
@@ -247,7 +237,7 @@ class VideoProcessor:
         time_text = current_time.strftime("%H:%M:%S")
         
         # 녹화 중 표시
-        blink = (self.frame_count // int(self.fps / 2)) % 2  # FPS 기반 0.5초 주기
+        blink = (self.record_frame_count // int(self.fps / 2)) % 2  # FPS 기반 0.5초 주기
         
         # 녹화 중임을 나타내는 원
         if self.is_recording:
@@ -261,14 +251,16 @@ class VideoProcessor:
                     FONT, FONT_SCALE, TEXT_COLOR, FONT_THICKNESS)
         
         # 녹화 시간 및 프레임
-        elapsed_time_seconds = self.frame_count / self.fps
+        elapsed_time_seconds = self.record_frame_count / self.fps
         elapsed_time_minutes = int(elapsed_time_seconds // 60)
         elapsed_time_seconds = int(elapsed_time_seconds % 60)
         elapsed_time_text = f"TIME {elapsed_time_minutes:02}:{elapsed_time_seconds:02}"
         
-        cv2.putText(frame, f"FRAME {self.frame_count}", (self.frame_width - 200, self.frame_height - 53),
+        # 녹화 프레임과 전체 프레임을 함께 표시
+        frame_text = f"FRAME {self.record_frame_count}/{self.total_frame_count}"
+        cv2.putText(frame, frame_text, (self.frame_width - 250, self.frame_height - 53),
                     FONT, FONT_SCALE, TEXT_COLOR, FONT_THICKNESS)
-        cv2.putText(frame, elapsed_time_text, (self.frame_width - 200, self.frame_height - 73),
+        cv2.putText(frame, elapsed_time_text, (self.frame_width - 250, self.frame_height - 73),
                     FONT, FONT_SCALE, TEXT_COLOR, FONT_THICKNESS)
         
         # 현재 시간 표시
@@ -315,7 +307,7 @@ class VideoProcessor:
         
         # 노이즈 효과
         if self.enable_noise:
-            processed_frame = self._add_gaussian_noise(processed_frame, self.gaussian_noise)
+            processed_frame = self._add_gaussian_noise(processed_frame, self.noise_buffer)
         
         # 스크래치 효과
         if self.enable_scratches:
@@ -347,7 +339,7 @@ class VideoProcessor:
                                       (self.frame_width, self.frame_height))
             print("녹화 시작")
             # 녹화 시작 시 프레임 카운트 초기화
-            self.frame_count = 0
+            self.record_frame_count = 0
             self.last_frame_time = time.time()
         elif not self.is_recording and self.out is not None:
             print("녹화 일시정지")
@@ -366,6 +358,9 @@ class VideoProcessor:
             print("소스를 읽을 수 없습니다.")
             return None
         
+        # 전체 프레임 카운트 증가 (효과 적용 전에 업데이트)
+        self.total_frame_count += 1
+        
         # 모든 효과 적용
         processed_frame = self._apply_effects(frame)
         
@@ -377,7 +372,7 @@ class VideoProcessor:
             # FPS에 맞게 시간이 경과했으면 프레임 저장
             if elapsed >= self.frame_interval:
                 self.out.write(processed_frame)
-                self.frame_count += 1
+                self.record_frame_count += 1
                 self.last_frame_time = current_time
         
         return processed_frame
