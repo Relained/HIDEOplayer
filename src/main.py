@@ -1,9 +1,10 @@
 import numpy as np
 import cv2
-import metalcompute as mc
+import threading
+import queue
+import time
 
 from datetime import datetime
-import time
 
 
 # 상수 정의
@@ -23,7 +24,6 @@ KEY_TOGGLE_SCRATCHES = 120 # x - 스크래치 토글
 # 디스플레이 상수
 DISPLAY_TITLE = "HIDEO"
 VIDEO_SOURCE = 0   # RTSP 주소 또는 0-N (카메라)
-VIDEO_FPS = 12.0
 OS_CODEC = 'mp4v'  # macOS/Linux mp4v, Windows XVID
 OS_CODEC_POSTFIX = 'mp4'
 TEXT_COLOR = (255, 255, 255)
@@ -43,14 +43,14 @@ DEFAULT_NOISE_BUFFER_SIZE = 5  # 노이즈 버퍼 크기 상수
 
 
 class VideoProcessor:
-    def __init__(self, input_path=0, fps=12.0):
+    def __init__(self, input_path=0):
         # 입력 경로 (RTSP 또는 파일 경로)
         self.cap = cv2.VideoCapture(input_path)
         
         # 비디오 속성
         self.frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.fps = fps
+        self.fps = cv2.CAP_PROP_FPS
         
         # 코덱, 출력 객체 초기화
         self.fourcc = cv2.VideoWriter_fourcc(*OS_CODEC)
@@ -488,7 +488,7 @@ class VideoProcessor:
 
 def main():
     # 비디오 프로세서 초기화
-    processor = VideoProcessor(input_path=VIDEO_SOURCE, fps=VIDEO_FPS)
+    processor = VideoProcessor(input_path=VIDEO_SOURCE)
     
     print("\n===== HIDEO 플레이어 =====")
     print("효과 토글 키:")
@@ -527,3 +527,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# TODO
+# 프레임을 타임스탬프와 함께 저장
+# 타임스탬프를 기반으로 영상을 녹화, 저장
