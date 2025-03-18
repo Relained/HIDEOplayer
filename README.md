@@ -5,10 +5,15 @@ y2k 레트로 효과를 적용할 수 있는 간단한 비디오 레코더입니
 그리고 Video와 언어유희로 이름을 "HIDEOplayer"로 지었습니다.  
 (일어로 비디오는 ”ビデオ”이고,　Hideo는 가타카나로　”ヒデオ”임)
 
+구린 웹캠을 사용할 수록 기깔납니다.
+
 ### Showcases
+
 <video width="320" height="240" controls>
   <source src="https://raw.githubusercontent.com/Relained/HIDEOplayer/main/output_20250318_222718.mp4" type="video/mp4">
 </video>
+
+<img width="296" alt="image" src="https://github.com/user-attachments/assets/e469b214-1cca-4d32-9174-2791ff67971d" />  
 
 위의 영상이 보이지 않는다면 아래 유튜브 링크를 시청해주세요.  
 [유튜브](https://youtu.be/tR0wsPpjYEM?si=RAtzuLpDljJATbxe)
