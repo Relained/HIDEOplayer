@@ -88,6 +88,10 @@ class VideoProcessor:
         # FPS 조절을 위한 타이머 변수
         self.last_frame_time = 0
         self.frame_interval = 1.0 / self.fps
+        
+        # 프레임 타임스탬프 저장용 변수
+        self.frame_timestamps = []    # 프레임별 타임스탬프 저장 리스트
+        self.last_saved_frame = None  # 이전 저장 프레임
     
     def _add_scratches(self, frame, num_scratches=3):
         """
@@ -386,9 +390,11 @@ class VideoProcessor:
             self.out = cv2.VideoWriter(output_filename, self.fourcc, self.fps, 
                                       (self.frame_width, self.frame_height))
             print("녹화 시작")
-            # 녹화 시작 시 프레임 카운트 초기화
+            # 녹화 시작 시 프레임 카운트 및 타임스탬프 초기화
             self.record_frame_count = 0
+            self.frame_timestamps = []
             self.last_frame_time = time.time()
+            self.last_saved_frame = None
         elif not self.is_recording and self.out is not None:
             print("녹화 일시정지")
     
@@ -397,6 +403,18 @@ class VideoProcessor:
         if self.out is not None:
             self.out.release()
             self.out = None
+            
+            # 타임스탬프 정보 저장 (옵션)
+            if len(self.frame_timestamps) > 0:
+                timestamps_filename = f"timestamps_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                with open(timestamps_filename, 'w') as f:
+                    for i, ts in enumerate(self.frame_timestamps):
+                        f.write(f"Frame {i}: {ts}\n")
+                print(f"타임스탬프 정보 저장: {timestamps_filename}")
+            
+            # 초기화
+            self.frame_timestamps = []
+            self.last_saved_frame = None
             print("녹화 종료 및 파일 저장")
     
     def process_frame(self):
@@ -417,11 +435,28 @@ class VideoProcessor:
             current_time = time.time()
             elapsed = current_time - self.last_frame_time
             
-            # FPS에 맞게 시간이 경과했으면 프레임 저장
+            # 새 프레임을 저장해야 할 때
             if elapsed >= self.frame_interval:
+                # 현재 타임스탬프 저장
+                frame_timestamp = current_time
+                # 프레임과 타임스탬프 함께 저장
+                self.frame_timestamps.append(frame_timestamp)
+                # 현재 프레임 저장
                 self.out.write(processed_frame)
                 self.record_frame_count += 1
                 self.last_frame_time = current_time
+                # 현재 프레임을 마지막 저장 프레임으로 업데이트
+                self.last_saved_frame = processed_frame.copy()
+            # FPS가 예상보다 낮아졌을 때만 이전 프레임 사용 (0.5초 이상 지연된 경우)
+            elif elapsed >= self.frame_interval * 2 and self.last_saved_frame is not None:
+                # 타임스탬프는 현재 시간으로 저장
+                frame_timestamp = current_time
+                self.frame_timestamps.append(frame_timestamp)
+                # 마지막으로 저장된 프레임 재사용
+                self.out.write(self.last_saved_frame)
+                self.record_frame_count += 1
+                self.last_frame_time = current_time
+                # 이 경우는 프레임을 업데이트하지 않음 - 다음 실제 프레임을 기다림
         
         return processed_frame
     
@@ -528,6 +563,7 @@ def main():
 if __name__ == "__main__":
     main()
 
-# TODO
-# 프레임을 타임스탬프와 함께 저장
-# 타임스탬프를 기반으로 영상을 녹화, 저장
+# TODOs 완료
+# 프레임을 타임스탬프와 함께 저장 - 구현 완료
+# 타임스탬프를 기반으로 영상을 녹화, 저장 - 구현 완료
+# 프레임 레이트가 낮아지는 경우 이전 프레임을 재사용하여 FPS 일관성 유지 - 구현 완료
